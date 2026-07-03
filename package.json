@@ -1,0 +1,22 @@
+{
+  "name": "lms-logger",
+  "version": "0.1.0",
+  "description": "Node.js client for the LMS Log Management System API with HMAC-SHA256 request signing",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "require": "./src/index.cjs"
+    }
+  },
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --testPathPattern=tests/"
+  },
+  "keywords": ["lms", "logging", "hmac", "Mongolia"],
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
