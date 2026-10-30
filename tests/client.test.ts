@@ -167,23 +167,43 @@ describe('direct mode', () => {
 })
 
 describe('buffered mode', () => {
-  it('batches in the background and flushes', async () => {
-    const batches: number[] = []
-    const { fetch } = fakeServer((call) => {
-      const n = (call.body.logs as unknown[]).length
-      batches.push(n)
+  /** Accepts both ingest endpoints: buffered mode sends a lone entry to /logs/app. */
+  function countingServer() {
+    const sent: { path: string; count: number }[] = []
+    const server = fakeServer((call) => {
+      const logs = call.body.logs as unknown[] | undefined
+      const count = logs ? logs.length : 1
+      sent.push({ path: new URL(call.url).pathname, count })
+      if (!logs) return created()
       return json(207, {
-        results: Array.from({ length: n }, (_, i) => ({ index: i, success: true, log_id: i })),
-        total: n,
-        succeeded: n,
+        results: logs.map((_, i) => ({ index: i, success: true, log_id: i })),
+        total: count,
+        succeeded: count,
         failed: 0,
       })
     })
-    const lms = client(fetch, { buffered: true, batchSize: 10, flushInterval: 20 })
+    return { ...server, sent }
+  }
+
+  it('batches in the background and flushes', async () => {
+    const { fetch, sent } = countingServer()
+    const errors: Error[] = []
+    const lms = client(fetch, { buffered: true, batchSize: 10, flushInterval: 20, onError: (e: Error) => errors.push(e) })
     for (let i = 0; i < 25; i++) expect(await lms.info(`m${i}`)).toBeUndefined()
     await lms.close()
-    expect(batches.reduce((a, b) => a + b, 0)).toBe(25)
-    expect(Math.max(...batches)).toBeLessThanOrEqual(10)
+    expect(errors).toEqual([])
+    expect(sent.reduce((a, b) => a + b.count, 0)).toBe(25)
+    expect(Math.max(...sent.map((s) => s.count))).toBeLessThanOrEqual(10)
+  })
+
+  it('sends a lone queued entry to the single-entry endpoint', async () => {
+    const { fetch, sent } = countingServer()
+    const errors: Error[] = []
+    const lms = client(fetch, { buffered: true, onError: (e: Error) => errors.push(e) })
+    await lms.info('only')
+    await lms.close()
+    expect(errors).toEqual([])
+    expect(sent).toEqual([{ path: '/api/v1/logs/app', count: 1 }])
   })
 
   it('never rejects; failures go to onError', async () => {
