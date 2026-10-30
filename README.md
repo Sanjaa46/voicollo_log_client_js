@@ -133,6 +133,7 @@ npm run check      # typecheck, lint, tests, build, ESM+CJS smoke test
 ```
 
 Release: bump `version` in `package.json` and `src/version.ts` (a test checks
-they match), add a CHANGELOG section, merge, then
-`git tag vX.Y.Z && git push --tags`. CI attaches the packed tarball to the
-GitHub release, and publishes to npm if an `NPM_TOKEN` secret exists.
+they match), add a CHANGELOG section, open a PR and merge it. On `main`, the
+Release workflow sees a version without a tag, runs `npm run check`, and then
+creates the `vX.Y.Z` tag and GitHub release with the packed tarball. It also
+publishes to npm if an `NPM_TOKEN` secret exists. Nobody pushes tags by hand.

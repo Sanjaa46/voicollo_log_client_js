@@ -6,6 +6,12 @@ matching `package.json`.
 
 ## [Unreleased]
 
+### Changed
+- Releases are automatic: merging a version bump into `main` creates the
+  `vX.Y.Z` tag and GitHub release. Tags no longer need to be pushed by hand.
+- The optional npm publish step never ran: its `if:` read an env var defined on
+  the same step. It now runs whenever an `NPM_TOKEN` secret exists.
+
 ## [1.0.0] - 2026-10-30
 
 Requires LMS server **2.0.0** or newer for the documented error codes.
