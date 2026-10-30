@@ -1,147 +1,138 @@
-# lms-logger
+# lms-logger (Node.js)
 
-Node.js client for the LMS Log Management System API.  
-Handles HMAC-SHA256 request signing, retries, and response parsing.
+Node.js / TypeScript client for the **Voicollo Log Management System**.
 
-## Requirements
+- HMAC-SHA256 request signing. Every retry is signed fresh and never counts as a replay.
+- Automatic retries with jittered backoff on network errors, 5xx and 429 (`Retry-After`).
+- Field validation that matches the server.
+- **Buffered mode**: background batching. Logging never throws and never crashes your process.
+- ESM and CommonJS, bundled type definitions, zero runtime dependencies.
 
-Node.js 18+ (uses native `fetch` and `crypto`).
+Requires Node.js ≥ 18.17 and an LMS server ≥ 2.0.
 
-## Installation
+## Install
+
+Pin a release tag (the package builds itself on install):
 
 ```bash
-# From GitHub (no npm publish needed)
-npm install github:YOUR_ORG/lms-logger-js
-
-# Or pin to a commit
-npm install github:YOUR_ORG/lms-logger-js#abc1234
+npm install github:Sanjaa46/voicollo_log_client_js#v1.0.0
 ```
 
----
+`package.json`:
 
-## Quick Start
-
-```js
-import { LMSClient, AppLogRequest, AuditLogRequest, LogLevel, ActorType } from "lms-logger";
-
-const client = new LMSClient({
-  baseUrl: "https://lms.example.mn",
-  serviceId: "your32charhexserviceid",
-  secret: "your-hmac-secret",
-});
-
-// Single app log
-await client.logApp(new AppLogRequest({
-  source_service: "my-service",
-  environment: "production",
-  level: LogLevel.INFO,
-  message: "Service started",
-  trace_id: "trace-abc123",
-  context_json: { version: "1.0.0" },
-}));
-
-// Batch app logs (one HTTP call)
-await client.logAppBatch([
-  new AppLogRequest({ source_service: "my-service", environment: "production", level: LogLevel.DEBUG, message: "step 1", trace_id: "t1" }),
-  new AppLogRequest({ source_service: "my-service", environment: "production", level: LogLevel.DEBUG, message: "step 2", trace_id: "t2" }),
-]);
-
-// Audit log (immutable — DELETE is blocked by LMS)
-await client.logAudit(new AuditLogRequest({
-  source_service: "my-service",
-  environment: "production",
-  action: "DELETE",
-  actor_type: ActorType.USER,
-  actor_id: "user-uuid",
-  target_resource: "citizen_record:42",
-  outcome: "success",
-  ip_address: "10.0.0.1",
-}));
-
-client.close(); // no-op, kept for API symmetry
+```json
+"dependencies": { "lms-logger": "github:Sanjaa46/voicollo_log_client_js#v1.0.0" }
 ```
 
----
+## Configure
 
-## Error Handling
+Register your service in the LMS console (**Services → Register**), then set:
 
-```js
-import {
-  LMSAuthError,
-  LMSRateLimitError,
-  LMSValidationError,
-  LMSConnectionError,
-} from "lms-logger";
+| Variable | Value |
+|---|---|
+| `LMS_URL` | the LMS address, e.g. `https://lms.example.com` |
+| `LMS_INGEST_SECRET` | the LMS `INGEST_SIGNING_SECRET` |
+| `LMS_SOURCE_SERVICE` | your registered service id |
 
-try {
-  await client.logApp(...);
-} catch (err) {
-  if (err instanceof LMSAuthError) {
-    // Wrong secret or clock drift — check x-timestamp / x-signature
-  } else if (err instanceof LMSRateLimitError) {
-    // Back off — never retry immediately
-  } else if (err instanceof LMSValidationError) {
-    // Payload rejected — err.responseBody has details
-    console.error(err.responseBody);
-  } else if (err instanceof LMSConnectionError) {
-    // LMS unreachable after maxRetries attempts
-  }
-}
+## Quick start
+
+```ts
+import { LMSClient } from 'lms-logger'          // or: const { LMSClient } = require('lms-logger')
+
+const lms = new LMSClient({
+  baseUrl: process.env.LMS_URL!,
+  secret: process.env.LMS_INGEST_SECRET!,
+  sourceService: process.env.LMS_SOURCE_SERVICE!,
+  environment: process.env.NODE_ENV ?? 'production',
+  buffered: true,                                 // recommended for servers
+  onError: (err) => console.error('[lms]', err.message),
+})
+
+lms.info('Payment captured', { orderId: 8812, amount: 129000 })
+lms.error('Gateway timeout', { gateway: 'golomt' }, { traceId: req.id })
+
+lms.audit({
+  actorId: user.id,
+  actorType: 'USER',              // USER | SERVICE | SYSTEM
+  action: 'RECORD_DELETE',        // VERB_NOUN
+  targetResource: '/records/42',
+  outcome: 'SUCCESS',             // SUCCESS | FAILURE | PARTIAL
+  ipAddress: req.ip,
+  detail: { reason: 'duplicate' },
+})
+
+process.on('SIGTERM', async () => {
+  await lms.close()               // sends whatever is still queued
+  process.exit(0)
+})
 ```
 
----
+Levels: `debug`, `info`, `warn`, `error`, `fatal`, or
+`lms.log('WARNING', ...)`. Timestamps default to now (UTC).
 
-## HMAC Signing
+## Buffered vs direct mode
 
-Every request is signed with:
-
-```
-message  = Buffer.concat([Buffer.from(`${unix_timestamp}.`), body_utf8])
-signature = HMAC-SHA256(secret, message).hexdigest()
-
-Headers sent:
-  x-timestamp: <unix_epoch_seconds>
-  x-signature: <hex_digest>
-```
-
-This matches the Python `lms-logger` client exactly.
-
----
-
-## Configuration
-
-| Option | Default | Description |
+| | `buffered: true` | `buffered: false` (default) |
 |---|---|---|
-| `baseUrl` | required | LMS API base URL |
-| `serviceId` | required | Your registered service UUID (32 hex chars) |
-| `secret` | required | HMAC shared secret |
-| `timeout` | `10000` | HTTP timeout in milliseconds |
-| `maxRetries` | `3` | Retries on network error (never retries 401/422/429) |
+| Call returns | immediately, `undefined` | after the HTTP response, `{ log_id, ingested_at }` |
+| Failures | `onError(error, entry)` | the promise rejects with an `LMSError` |
+| Transport | app logs batched (`batchSize` 50, `flushInterval` 2000 ms); audit logs sent individually | one request per call |
+| Use for | web servers, workers | scripts, tests, "must be stored before continuing" |
 
----
+Buffered mode keeps at most `maxQueue` (10 000) entries in memory; beyond that,
+entries are dropped and reported (`lms.dropped` counts them). The queue is
+flushed on `close()`, `flush()` and Node's `beforeExit`.
 
-## Log Levels
+## Explicit requests and batches (v0 API, still supported)
 
-```js
-LogLevel.DEBUG    // "DEBUG"
-LogLevel.INFO     // "INFO"
-LogLevel.WARNING  // "WARN"
-LogLevel.ERROR    // "ERROR"
-LogLevel.FATAL    // "FATAL"
+```ts
+import { AppLogRequest, AuditLogRequest, LogLevel } from 'lms-logger'
+
+await lms.logApp(new AppLogRequest({ level: LogLevel.INFO, message: 'hi', context_json: { a: 1 } }))
+const result = await lms.logAppBatch([
+  { level: 'INFO', message: 'step 1' },
+  { level: 'DEBUG', message: 'step 2' },
+])
+result.results.filter((r) => !r.success)    // partial success is per entry
 ```
 
-## Actor Types (Audit Logs)
+## Errors
 
-```js
-ActorType.USER     // "USER"
-ActorType.SERVICE  // "SERVICE"
-ActorType.SYSTEM   // "SYSTEM"
+Every error extends `LMSError` (`statusCode`, `errorCode`, `requestId`,
+`responseBody`).
+
+| Class | When | Retried |
+|---|---|---|
+| `LMSConfigError` | missing `secret`/`sourceService`/`environment`, invalid field | — |
+| `LMSAuthError` | 401: wrong secret, or clock skew (`SIGNATURE_EXPIRED`) | no |
+| `LMSPermissionError` | 403 `SERVICE_DISABLED` | no |
+| `LMSValidationError` | 422: invalid payload, `SERVICE_NOT_REGISTERED` | no |
+| `LMSConflictError` | 409 `DUPLICATE_REQUEST` | no |
+| `LMSRateLimitError` | 429 (`retryAfter`) | yes |
+| `LMSServerError` | 5xx | yes |
+| `LMSConnectionError` | network failure / timeout (`cause` holds the original) | yes |
+
+Options: `timeout` (10 000 ms), `maxRetries` (3), `backoff` (500 ms),
+`maxBackoff` (30 000 ms), `headers`, `fetch` (custom implementation).
+
+## Signing protocol
+
+```
+X-Timestamp: <unix seconds>
+X-Signature: hex(HMAC_SHA256(secret, "<timestamp>." + raw_json_body))
 ```
 
----
+`generateSignature(secret, body, timestamp)` is exported if you need to sign
+requests yourself.
 
-## Running Tests
+## Development
 
 ```bash
-npm test
+npm install
+npm run check      # typecheck, lint, tests, build, ESM+CJS smoke test
 ```
+
+Release: bump `version` in `package.json` and `src/version.ts` (a test checks
+they match), add a CHANGELOG section, merge, then
+`git tag vX.Y.Z && git push --tags`. CI attaches the packed tarball to the
+GitHub release, and publishes to npm if an `NPM_TOKEN` secret exists.

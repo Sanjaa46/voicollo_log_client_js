@@ -1,22 +1,63 @@
 {
   "name": "lms-logger",
-  "version": "0.1.0",
-  "description": "Node.js client for the LMS Log Management System API with HMAC-SHA256 request signing",
-  "main": "src/index.js",
-  "types": "src/index.d.ts",
+  "version": "1.0.0",
+  "description": "Node.js client for the Voicollo Log Management System — signed ingestion, retries, background batching",
+  "license": "MIT",
+  "author": "Voicollo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sanjaa46/voicollo_log_client_js.git"
+  },
+  "keywords": [
+    "logging",
+    "audit",
+    "lms",
+    "hmac",
+    "voicollo"
+  ],
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./src/index.js",
-      "require": "./src/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.17"
   },
   "scripts": {
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --testPathPattern=tests/"
+    "build": "tsup",
+    "prepare": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && node scripts/smoke.mjs"
   },
-  "keywords": ["lms", "logging", "hmac", "Mongolia"],
-  "license": "MIT",
   "devDependencies": {
-    "jest": "^29.0.0"
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.20.5",
+    "eslint": "^9.39.5",
+    "tsup": "^9.0.0",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
   }
 }
