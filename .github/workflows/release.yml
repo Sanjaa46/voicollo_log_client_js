@@ -1,35 +1,108 @@
 name: Release
+
+# Version driven releases. package.json "version" is the source of truth:
+#
+#   * push to main  -> if tag v<version> does not exist yet, test + build,
+#                      then create the tag and the GitHub release (with the
+#                      packed tarball). If it exists, nothing happens.
+#   * push a v* tag -> release that tag (it must match package.json).
+#   * Actions tab   -> "Run workflow" re-runs the check for the current main.
+#
+# So releasing = bump the version (package.json + src/version.ts) and the
+# CHANGELOG in a PR and merge it. Nobody has to push tags by hand.
 on:
   push:
+    branches: [main]
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  id-token: write
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # `secrets` cannot be used in `if:`; expose whether the token exists.
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        with:
+          fetch-depth: 0 # needs existing tags to decide whether to release
+
+      - name: Decide version
+        id: version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match package.json ($version)"; exit 1
+            fi
+            release=true
+          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already released; nothing to do"
+            release=false
+          else
+            release=true
+          fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "release=$release"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - if: steps.version.outputs.release == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
-      - name: Tag must match package.json
+
+      - if: steps.version.outputs.release == 'true'
+        run: npm ci
+
+      # typecheck, lint, tests (incl. VERSION == package.json), build, ESM/CJS smoke
+      - if: steps.version.outputs.release == 'true'
+        run: npm run check
+
+      - if: steps.version.outputs.release == 'true'
+        run: npm pack
+
+      - name: Release notes from CHANGELOG
+        if: steps.version.outputs.release == 'true'
         run: |
-          version=$(node -p "require('./package.json').version")
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != package.json $version"; exit 1; }
-      - run: npm ci
-      - run: npm run check
-      - run: npm pack
-      - uses: softprops/action-gh-release@v2
+          awk -v v="${{ steps.version.outputs.version }}" '
+            $0 ~ "^## \\[" v "\\]" {found=1; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          {
+            echo
+            echo "Install: \`npm install github:${{ github.repository }}#${{ steps.version.outputs.tag }}\`"
+          } >> release-notes.md
+
+      # Creates the tag on this exact commit if it does not exist yet.
+      - if: steps.version.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: lms-logger ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
           files: lms-logger-*.tgz
-          generate_release_notes: true
-      # Optional: publish to npm when an NPM_TOKEN secret is configured.
-      - if: env.NODE_AUTH_TOKEN != ''
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+
+      # Optional: publish to the npm registry when an NPM_TOKEN secret exists.
+      - if: steps.version.outputs.release == 'true' && env.HAS_NPM_TOKEN == 'true'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
